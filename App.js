@@ -21,6 +21,12 @@ import * as Contacts from 'expo-contacts';
 import { Ionicons } from '@expo/vector-icons';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword, getAuth, GoogleAuthProvider, onAuthStateChanged,
+  signInWithCredential, signInWithEmailAndPassword, signOut, updateProfile,
+} from 'firebase/auth';
+import * as Google from 'expo-auth-session/providers/google';
+import * as WebBrowser from 'expo-web-browser';
+import {
   addDoc,
   collection,
   getFirestore,
@@ -42,6 +48,8 @@ const firebaseConfig = {
 
 const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
+WebBrowser.maybeCompleteAuthSession();
 
 const COLORS = {
   primary: '#168A58',
@@ -125,7 +133,12 @@ function ContactsScreen({ navigation }) {
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 12) + 12 }]}>
       <Text style={styles.screenTitle}>Chit Chat</Text>
-      <Text style={styles.screenSubtitle}>Your contacts</Text>
+      <View style={styles.contactsTitleRow}>
+        <View style={{ flex: 1 }}><Text style={styles.screenSubtitle}>Your contacts</Text></View>
+        <TouchableOpacity onPress={() => signOut(auth).catch((error) => Alert.alert('Could not log out', authErrorMessage(error)))} style={styles.logoutButton} accessibilityRole="button" accessibilityLabel="Log out">
+          <Ionicons name="log-out-outline" size={22} color={COLORS.primary} />
+        </TouchableOpacity>
+      </View>
 
       {loading ? (
         <View style={styles.centered}>
@@ -317,7 +330,126 @@ function MainTabs() {
   );
 }
 
+
+function authErrorMessage(error) {
+  const messages = {
+    'auth/email-already-in-use': 'An account already exists for this email. Try logging in.',
+    'auth/invalid-email': 'That email address is not valid.',
+    'auth/weak-password': 'Choose a password with at least 6 characters.',
+    'auth/user-not-found': 'No account found for this email. Create an account first.',
+    'auth/wrong-password': 'Incorrect password. Please try again.',
+    'auth/invalid-credential': 'Email or password is incorrect.',
+    'auth/network-request-failed': 'Network error. Check your internet connection.',
+    'auth/operation-not-allowed': 'Enable this sign-in method in Firebase Console → Authentication.',
+  };
+  return messages[error?.code] || error?.message || 'Something went wrong. Please try again.';
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState('welcome');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: 'YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com',
+    androidClientId: 'YOUR_GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com',
+    iosClientId: 'YOUR_GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com',
+  });
+
+  useEffect(() => {
+    if (response?.type !== 'success') return;
+    const idToken = response.params?.id_token;
+    if (!idToken) {
+      Alert.alert('Google sign-in', 'No ID token was returned. Check your Google OAuth setup.');
+      return;
+    }
+    setBusy(true);
+    signInWithCredential(auth, GoogleAuthProvider.credential(idToken))
+      .catch((error) => Alert.alert('Google sign-in failed', authErrorMessage(error)))
+      .finally(() => setBusy(false));
+  }, [response]);
+
+  async function submitEmailAuth() {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      Alert.alert('Check your email', 'Enter a valid email address.');
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert('Password too short', 'Use at least 6 characters.');
+      return;
+    }
+    if (mode === 'register' && !name.trim()) {
+      Alert.alert('Name required', 'Enter your name to create an account.');
+      return;
+    }
+    setBusy(true);
+    try {
+      if (mode === 'register') {
+        const result = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        await updateProfile(result.user, { displayName: name.trim() });
+      } else {
+        await signInWithEmailAndPassword(auth, cleanEmail, password);
+      }
+    } catch (error) {
+      Alert.alert(mode === 'register' ? 'Registration failed' : 'Login failed', authErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (mode === 'welcome') return (
+    <View style={styles.authScreen}>
+      <View style={styles.heroCircle}><Ionicons name="chatbubbles" size={62} color="#FFFFFF" /></View>
+      <Text style={styles.brandTitle}>Chit Chat</Text>
+      <Text style={styles.authSubtitle}>Good conversations start here.</Text>
+      <View style={styles.featureLine}><Ionicons name="people" size={20} color={COLORS.primary}/><Text style={styles.featureText}>Connect with people in your contacts</Text></View>
+      <View style={styles.featureLine}><Ionicons name="chatbubble-ellipses" size={20} color={COLORS.primary}/><Text style={styles.featureText}>Keep your conversations in one place</Text></View>
+      <TouchableOpacity style={styles.primaryAuthButton} onPress={() => setMode('login')} accessibilityRole="button"><Text style={styles.primaryAuthText}>Log in</Text></TouchableOpacity>
+      <TouchableOpacity style={styles.secondaryAuthButton} onPress={() => setMode('register')} accessibilityRole="button"><Text style={styles.secondaryAuthText}>Create an account</Text></TouchableOpacity>
+      <Text style={styles.authFootnote}>Simple messaging, made personal.</Text>
+    </View>
+  );
+
+  return (
+    <KeyboardAvoidingView style={styles.authScreen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <TouchableOpacity style={styles.authBack} onPress={() => setMode('welcome')} accessibilityRole="button"><Ionicons name="arrow-back" size={24} color={COLORS.text}/></TouchableOpacity>
+      <View style={styles.authLogoSmall}><Ionicons name="chatbubbles" size={34} color="#FFFFFF"/></View>
+      <Text style={styles.authHeading}>{mode === 'register' ? 'Create your account' : 'Welcome back'}</Text>
+      <Text style={[styles.authSubtitle, {textAlign:'left'}]}>{mode === 'register' ? 'Join Chit Chat and stay connected.' : 'Log in to continue chatting.'}</Text>
+      {mode === 'register' && <TextInput style={styles.authInput} placeholder="Your name" placeholderTextColor={COLORS.secondary} value={name} onChangeText={setName} autoCapitalize="words" returnKeyType="next" />}
+      <TextInput style={styles.authInput} placeholder="Email address" placeholderTextColor={COLORS.secondary} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="emailAddress" returnKeyType="next" />
+      <TextInput style={styles.authInput} placeholder="Password (6+ characters)" placeholderTextColor={COLORS.secondary} value={password} onChangeText={setPassword} secureTextEntry textContentType={mode === 'register' ? 'newPassword' : 'password'} onSubmitEditing={submitEmailAuth} />
+      <TouchableOpacity style={[styles.primaryAuthButton, busy && styles.authDisabled]} onPress={submitEmailAuth} disabled={busy} accessibilityRole="button">{busy ? <ActivityIndicator color="#FFFFFF"/> : <Text style={styles.primaryAuthText}>{mode === 'register' ? 'Create account' : 'Log in'}</Text>}</TouchableOpacity>
+      <View style={styles.orRow}><View style={styles.orLine}/><Text style={styles.orText}>OR</Text><View style={styles.orLine}/></View>
+      <TouchableOpacity style={[styles.googleButton, (!request || busy) && styles.authDisabled]} onPress={() => {
+        if (!request || busy) return;
+        const configured = ![
+          'YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com',
+          'YOUR_GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com',
+          'YOUR_GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com',
+        ].some((value) => value.startsWith('YOUR_GOOGLE_'));
+        if (!configured) {
+          Alert.alert('Google sign-in setup', 'Add your real Google OAuth client IDs in App.js and enable Google in Firebase Console → Authentication. Email/password login and registration are ready once Email/Password is enabled in Firebase.');
+          return;
+        }
+        promptAsync();
+      }} disabled={!request || busy} accessibilityRole="button">
+        <Ionicons name="logo-google" size={20} color="#4285F4"/><Text style={styles.googleButtonText}>Continue with Google</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => setMode(mode === 'register' ? 'login' : 'register')} style={styles.switchAuth}><Text style={styles.switchAuthText}>{mode === 'register' ? 'Already have an account? Log in' : "Don't have an account? Sign up"}</Text></TouchableOpacity>
+      <Text style={styles.authFootnote}>By continuing, you agree to use Chit Chat responsibly.</Text>
+    </KeyboardAvoidingView>
+  );
+}
+
+
 function AppNavigator() {
+  const [user, setUser] = useState(undefined);
+  useEffect(() => onAuthStateChanged(auth, (currentUser) => setUser(currentUser)), []);
+  if (user === undefined) return <View style={styles.authLoading}><ActivityIndicator size="large" color={COLORS.primary}/><Text style={styles.helperText}>Preparing Chit Chat…</Text></View>;
+  if (!user) return <AuthScreen />;
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -329,12 +461,7 @@ function AppNavigator() {
 }
 
 export default function App() {
-  return (
-    <SafeAreaProvider>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
-      <AppNavigator />
-    </SafeAreaProvider>
-  );
+  return <SafeAreaProvider><StatusBar barStyle="dark-content" backgroundColor={COLORS.background} /><AppNavigator /></SafeAreaProvider>;
 }
 
 const styles = StyleSheet.create({
@@ -376,4 +503,31 @@ const styles = StyleSheet.create({
   messageInput: { flex: 1, maxHeight: 110, minHeight: 42, backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border, borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10, color: COLORS.text, fontSize: 15 },
   sendButton: { width: 42, height: 42, borderRadius: 21, marginLeft: 8, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
   sendButtonDisabled: { opacity: 0.5 },
+
+  authScreen: { flex: 1, backgroundColor: COLORS.background, paddingHorizontal: 26, justifyContent: 'center' },
+  authLoading: { flex: 1, backgroundColor: COLORS.background, alignItems: 'center', justifyContent: 'center' },
+  heroCircle: { alignSelf: 'center', width: 124, height: 124, borderRadius: 62, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginBottom: 22, elevation: 5 },
+  brandTitle: { fontSize: 36, fontWeight: '800', color: COLORS.text, textAlign: 'center', letterSpacing: -0.5 },
+  authHeading: { fontSize: 28, fontWeight: '800', color: COLORS.text, marginTop: 22 },
+  authSubtitle: { fontSize: 15, lineHeight: 22, color: COLORS.secondary, textAlign: 'center', marginTop: 8, marginBottom: 26 },
+  authLogoSmall: { width: 66, height: 66, borderRadius: 22, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
+  featureLine: { flexDirection: 'row', alignItems: 'center', marginTop: 18, paddingHorizontal: 8 },
+  featureText: { color: COLORS.text, fontSize: 15, marginLeft: 12, flex: 1 },
+  primaryAuthButton: { minHeight: 52, borderRadius: 15, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginTop: 22, paddingHorizontal: 16 },
+  primaryAuthText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  secondaryAuthButton: { minHeight: 52, borderRadius: 15, borderWidth: 1, borderColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
+  secondaryAuthText: { color: COLORS.primary, fontSize: 16, fontWeight: '700' },
+  authFootnote: { color: COLORS.secondary, fontSize: 12, textAlign: 'center', marginTop: 22, lineHeight: 18 },
+  authBack: { position: 'absolute', top: 48, left: 22, padding: 8, zIndex: 2 },
+  authInput: { minHeight: 52, borderRadius: 14, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.card, paddingHorizontal: 16, color: COLORS.text, marginTop: 12, fontSize: 15 },
+  authDisabled: { opacity: 0.6 },
+  orRow: { flexDirection: 'row', alignItems: 'center', marginTop: 20, marginBottom: 4 },
+  orLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
+  orText: { color: COLORS.secondary, marginHorizontal: 12, fontSize: 12, fontWeight: '600' },
+  googleButton: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', borderRadius: 15, backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, marginTop: 12, gap: 10 },
+  googleButtonText: { color: COLORS.text, fontSize: 15, fontWeight: '700' },
+  switchAuth: { alignSelf: 'center', padding: 12, marginTop: 12 },
+  switchAuthText: { color: COLORS.primary, fontWeight: '700', textAlign: 'center' },
+  contactsTitleRow: { flexDirection: 'row', alignItems: 'center', paddingRight: 16 },
+  logoutButton: { padding: 8, marginBottom: 14 },
 });
