@@ -34,10 +34,6 @@ import {
   addDoc,
   collection,
   getFirestore,
-  getStorage,
-  ref as storageRef,
-  uploadBytes,
-  getDownloadURL,
   doc,
   setDoc,
   onSnapshot,
@@ -45,6 +41,12 @@ import {
   query,
   serverTimestamp,
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+} from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyCO9r_HjdXGbA8WeyJyd1G1gkxEVyrn09s',
