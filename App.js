@@ -1,8 +1,8 @@
-Const ComponentFunction = function() {
+const ComponentFunction = function() {
   // @section:imports @depends:[]
   const React = require('react');
   const { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Image, StatusBar, Platform, Alert, useWindowDimensions } = require('react-native');
-  const { Ionicons } = require('@react-native-vector-icons/ionicons');
+  const { Ionicons } = require('@expo/vector-icons'); // FIXED IMPORT
   const { createBottomTabNavigator } = require('@react-navigation/bottom-tabs');
   const { createStackNavigator } = require('@react-navigation/stack');
   const { useSafeAreaInsets } = require('react-native-safe-area-context');
