@@ -1,19 +1,21 @@
-# Chit Chat — patched Expo SDK 51 source
+# Chit Chat — Expo SDK 51
 
-## Files changed
-- `App.js`: fixes the missing default export, moves screen components to module scope so they are not recreated on every render, adds `NavigationContainer` and `SafeAreaProvider`, and handles contact/Firebase errors.
-- `package.json`: uses the Expo SDK 51 contacts package version and adds the SDK-compatible Expo icon package; removes the unused `react-native-vector-icons` package.
-- `app.json`: configures the Expo Contacts permission prompt and removes a favicon reference to an asset that was not included in the supplied source archive.
-- `eas.json`: retained from the supplied project.
+## Included in this update
+- Welcome/onboarding screen.
+- Email/password registration and login using Firebase Authentication.
+- Google sign-in integration scaffold using Expo AuthSession and Firebase credentials.
+- Authentication state gate and logout.
+- Existing contacts screen and Firestore chat screen retained.
 
-## Apply from an Android phone
-1. Extract this ZIP.
-2. In your GitHub repository, replace `App.js`, `package.json`, and `app.json` with the versions from this folder. Keep `eas.json`.
-3. Commit the files to the branch your Expo/EAS project builds.
-4. In Expo/EAS, start a new Android APK build from that commit. Install the new APK; an old APK will not contain the fixes.
+## Required setup before testing
+1. Run `npm install` in the project directory.
+2. In Firebase Console for the configured project, open **Authentication → Sign-in method** and enable **Email/Password**.
+3. For Google login, enable **Google** in Firebase Authentication and create OAuth client IDs in Google Cloud Console. Replace the three `YOUR_GOOGLE_*_CLIENT_ID` placeholders in `App.js` with the real Web, Android and iOS client IDs as appropriate. Google sign-in is intentionally guarded until those credentials are configured; placeholder IDs cannot authenticate.
+4. Confirm Firestore is enabled and configure security rules so only authorized users can read/write the intended messages. Do not make the database publicly writable.
+5. Run `npx expo-doctor`, then `npx expo start`. Test on a real Android device and build a fresh APK with EAS.
 
-## Important
-- This source was reviewed and patched, but an actual EAS build/device run could not be performed in this environment.
-- Chat messages use the Firebase project configured in `App.js`. Firestore must be enabled and its security rules must be configured safely for your intended users. This code does not add user authentication; do not make your database publicly writable just to make sending work.
-- Contact access is optional. If denied, the app should remain open and show a helpful message.
-- If the APK still crashes, share the new EAS build log and, if possible, AndroidRuntime/ReactNativeJS crash output.
+## Reliability notes
+- Form validation and Firebase errors are handled with user-facing messages.
+- Contact permission remains optional.
+- No source change can guarantee zero crashes on every device/configuration. This source has not been built or run on a physical device in this environment. Verify the Expo doctor output and EAS build logs before distributing.
+- The Google OAuth client IDs must be supplied by the app owner; they cannot safely be fabricated.
