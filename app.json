@@ -13,7 +13,10 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.yvikash470.chitchat"
+      "package": "com.yvikash470.chitchat",
+      "permissions": [
+        "READ_CONTACTS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
