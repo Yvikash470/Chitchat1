@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -32,12 +32,16 @@ import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import {
   addDoc,
+  arrayRemove,
+  arrayUnion,
   collection,
+  deleteDoc,
   getFirestore,
   doc,
   setDoc,
   getDocs,
   getDoc,
+  updateDoc,
   where,
   limit,
   onSnapshot,
@@ -48,6 +52,7 @@ import {
 import {
   getStorage,
   ref as storageRef,
+  deleteObject,
   uploadBytes,
   getDownloadURL,
 } from 'firebase/storage';
@@ -219,7 +224,7 @@ function ConversationScreen({ route, navigation }) {
     if ((!cleanText && !media) || !conversationId || !currentUser?.uid) return;
     setSending(true);
     try {
-      await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
+      const messageRef = await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
         text: cleanText,
         senderId: currentUser.uid,
         senderName: currentUser.displayName || currentUser.email || 'Chit Chat user',
@@ -229,6 +234,8 @@ function ConversationScreen({ route, navigation }) {
       });
       await setDoc(doc(db, 'conversations', conversationId), {
         lastMessage: cleanText || (media?.type === 'video' ? 'Video' : 'Photo'),
+        lastMessageId: messageRef.id,
+        lastSenderId: currentUser.uid,
         updatedAt: serverTimestamp(),
       }, { merge: true });
       setMessageText('');
@@ -238,6 +245,42 @@ function ConversationScreen({ route, navigation }) {
     } finally {
       setSending(false);
     }
+  }
+
+  function showMessageActions(message, mine) {
+    if (!mine) {
+      Alert.alert('Message options', 'You can delete only messages that you sent.');
+      return;
+    }
+    Alert.alert('Delete message?', 'This removes your message from the conversation for all members.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete message', style: 'destructive', onPress: async () => {
+        try {
+          if (message.mediaUrl) {
+            try { await deleteObject(storageRef(storage, message.mediaUrl)); }
+            catch (storageError) { console.warn('Could not remove message media file:', storageError); }
+          }
+          await deleteDoc(doc(db, 'conversations', conversationId, 'messages', message.id));
+          try {
+            const conversationRef = doc(db, 'conversations', conversationId);
+            const conversationSnapshot = await getDoc(conversationRef);
+            if (conversationSnapshot.exists() && conversationSnapshot.data().lastMessageId === message.id) {
+              const remaining = await getDocs(query(collection(db, 'conversations', conversationId, 'messages'), orderBy('createdAt', 'desc'), limit(1)));
+              if (remaining.empty) {
+                await updateDoc(conversationRef, { lastMessage: '', lastMessageId: null, lastSenderId: null, updatedAt: serverTimestamp() });
+              } else {
+                const latest = remaining.docs[0];
+                const latestData = latest.data();
+                await updateDoc(conversationRef, { lastMessage: latestData.text || (latestData.mediaType === 'video' ? 'Video' : latestData.mediaUrl ? 'Photo' : ''), lastMessageId: latest.id, lastSenderId: latestData.senderId || null, updatedAt: serverTimestamp() });
+              }
+            }
+          } catch (previewError) { console.warn('Could not refresh chat preview after deleting message:', previewError); }
+        } catch (error) {
+          console.warn('Message delete failed:', error);
+          Alert.alert('Could not delete message', error?.message || 'Check your Firestore rules and connection.');
+        }
+      } },
+    ]);
   }
 
   async function chooseChatMedia() {
@@ -292,12 +335,13 @@ function ConversationScreen({ route, navigation }) {
           ListEmptyComponent={<View style={styles.emptyState}><Ionicons name="chatbubbles-outline" size={42} color={COLORS.secondary} /><Text style={styles.emptyTitle}>Start the conversation</Text><Text style={styles.helperText}>Messages are synced live for conversation members.</Text></View>}
           renderItem={({ item }) => {
             const mine = item.senderId === currentUser?.uid;
-            return <View style={[styles.messageBubble, mine ? styles.myMessage : styles.theirMessage]}>
+            return <TouchableOpacity activeOpacity={0.9} onLongPress={() => showMessageActions(item, mine)} style={[styles.messageBubble, mine ? styles.myMessage : styles.theirMessage]} accessibilityRole="button" accessibilityLabel={mine ? 'Your message. Long press to delete.' : 'Message'}>
               <Text style={styles.messageSender}>{mine ? 'You' : (item.senderName || 'User')}</Text>
               {!!item.text && <Text style={styles.messageText}>{item.text}</Text>}
               {item.mediaUrl && item.mediaType === 'image' ? <Image source={{ uri: item.mediaUrl }} style={styles.statusMedia} resizeMode="cover" /> : null}
               {item.mediaUrl && item.mediaType === 'video' ? <Text style={styles.mediaLink} onPress={() => Linking.openURL(item.mediaUrl).catch(() => Alert.alert('Cannot open video', 'This video URL could not be opened on this device.'))}>▶ Open video</Text> : null}
-            </View>;
+              {mine ? <Text style={styles.messageActionHint}>Long press to delete</Text> : null}
+            </TouchableOpacity>;
           }}
         />
       )}
@@ -314,7 +358,8 @@ function openAppMenu() {
   Alert.alert('Chit Chat', 'Choose an option', [
     { text: 'New group', onPress: () => Alert.alert('Create group', 'Open the Chats tab and choose Create group. Add the email addresses of registered members.') },
     { text: 'Starred messages', onPress: () => Alert.alert('Starred messages', 'Message starring is not enabled in this build yet.') },
-    { text: 'Linked devices', onPress: () => Alert.alert('Linked devices', 'Linked-device pairing is not supported by the current Firebase setup.') },
+    { text: 'Link device', onPress: () => Alert.alert('Link another device', 'Install Chit Chat on your other phone and sign in with this same account. Your chats sync through Firebase. QR-based companion-device pairing and a device-management list are not implemented in this version.') },
+    { text: 'Message pop-ups', onPress: () => Alert.alert('Message pop-ups', 'Chit Chat shows an in-app pop-up when a new message arrives while the app is open. Lock-screen/background push notifications require additional Expo push notification setup and a trusted server trigger.') },
     { text: 'Settings / Profile', onPress: () => Alert.alert('Account', `Signed in as ${auth.currentUser?.displayName || auth.currentUser?.email || 'Chit Chat user'}\n\nUse Firebase Authentication to manage your account.`, [{ text: 'OK' }, { text: 'Log out', style: 'destructive', onPress: () => signOut(auth).catch((error) => Alert.alert('Could not log out', authErrorMessage(error))) }]) },
     { text: 'Log out', style: 'destructive', onPress: () => signOut(auth).catch((error) => Alert.alert('Could not log out', authErrorMessage(error))) },
     { text: 'Cancel', style: 'cancel' },
@@ -345,12 +390,26 @@ function ChatsScreen({ navigation }) {
   const [newChatEmail, setNewChatEmail] = useState('');
   const [saving, setSaving] = useState(false);
   const currentUser = auth.currentUser;
+  const previousMessageIds = useRef({});
+  const initialSnapshotLoaded = useRef(false);
 
   useEffect(() => {
     if (!currentUser?.uid) { setLoading(false); return undefined; }
     const q = query(collection(db, 'conversations'), where('members', 'array-contains', currentUser.uid));
     return onSnapshot(q, (snapshot) => {
-      const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      const rawItems = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      if (initialSnapshotLoaded.current) {
+        rawItems.forEach((item) => {
+          const previousId = previousMessageIds.current[item.id];
+          const isVisibleToUser = !(item.hiddenFor || []).includes(currentUser.uid);
+          if (isVisibleToUser && item.lastMessageId && item.lastMessageId !== previousId && item.lastSenderId && item.lastSenderId !== currentUser.uid) {
+            Alert.alert(`New message · ${item.title || 'Chit Chat'}`, item.lastMessage || 'You received a new message.');
+          }
+        });
+      }
+      previousMessageIds.current = Object.fromEntries(rawItems.map((item) => [item.id, item.lastMessageId || null]));
+      initialSnapshotLoaded.current = true;
+      const items = rawItems.filter((item) => !(item.hiddenFor || []).includes(currentUser.uid));
       items.sort((a, b) => (b.updatedAt?.toMillis?.() || 0) - (a.updatedAt?.toMillis?.() || 0));
       setConversations(items);
       setLoading(false);
@@ -390,6 +449,8 @@ function ChatsScreen({ navigation }) {
           createdBy: currentUser.uid,
           updatedAt: serverTimestamp(),
         });
+      } else if ((existingConversation.data().hiddenFor || []).includes(currentUser.uid)) {
+        await updateDoc(conversationRef, { hiddenFor: arrayRemove(currentUser.uid), updatedAt: serverTimestamp() });
       }
       setNewChatModal(false);
       setNewChatEmail('');
@@ -398,6 +459,20 @@ function ChatsScreen({ navigation }) {
       console.warn('Could not start private chat:', error);
       Alert.alert('Could not start chat', error?.message || 'Check Firestore rules and internet connection.');
     } finally { setSaving(false); }
+  }
+
+  function confirmDeleteChat(conversation) {
+    Alert.alert('Delete chat?', `Hide “${conversation.title || 'Conversation'}” from your chat list? Other members will keep their copy.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete for me', style: 'destructive', onPress: async () => {
+        try {
+          await updateDoc(doc(db, 'conversations', conversation.id), { hiddenFor: arrayUnion(currentUser.uid) });
+        } catch (error) {
+          console.warn('Delete chat failed:', error);
+          Alert.alert('Could not delete chat', error?.message || 'Check Firestore rules and connection.');
+        }
+      } },
+    ]);
   }
 
   async function createGroup() {
@@ -453,7 +528,14 @@ function ChatsScreen({ navigation }) {
       {loading ? <View style={styles.centered}><ActivityIndicator size="large" color={COLORS.primary}/><Text style={styles.helperText}>Loading chats…</Text></View> : (
         <FlatList data={conversations} keyExtractor={(item) => item.id} contentContainerStyle={styles.contactList}
           ListEmptyComponent={<View style={styles.emptyState}><Ionicons name="chatbubbles-outline" size={46} color={COLORS.primary}/><Text style={styles.emptyTitle}>No conversations yet</Text><Text style={styles.helperText}>Start a private chat with a registered user's email, or create a group.</Text></View>}
-          renderItem={({ item }) => <TouchableOpacity style={styles.contactRow} onPress={() => navigation.navigate('Conversation', { conversationId: item.id, title: item.title || (item.type === 'group' ? 'Group chat' : 'Private chat'), kind: item.type || 'private' })} accessibilityRole="button"><View style={styles.avatar}><Ionicons name={item.type === 'group' ? 'people' : 'chatbubble'} size={20} color={COLORS.primary}/></View><View style={styles.contactDetails}><Text style={styles.contactName}>{item.title || 'Conversation'}</Text><Text style={styles.contactNumber} numberOfLines={1}>{item.lastMessage || (item.type === 'group' ? 'Group conversation' : 'Private conversation')}</Text></View><Ionicons name="chevron-forward" size={20} color={COLORS.secondary}/></TouchableOpacity>}
+          renderItem={({ item }) => <View style={styles.contactRow}>
+            <TouchableOpacity style={styles.chatRowMain} onPress={() => navigation.navigate('Conversation', { conversationId: item.id, title: item.title || (item.type === 'group' ? 'Group chat' : 'Private chat'), kind: item.type || 'private' })} accessibilityRole="button">
+              <View style={styles.avatar}><Ionicons name={item.type === 'group' ? 'people' : 'chatbubble'} size={20} color={COLORS.primary}/></View>
+              <View style={styles.contactDetails}><Text style={styles.contactName}>{item.title || 'Conversation'}</Text><Text style={styles.contactNumber} numberOfLines={1}>{item.lastMessage || (item.type === 'group' ? 'Group conversation' : 'Private conversation')}</Text></View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.secondary}/>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.deleteChatButton} onPress={() => confirmDeleteChat(item)} accessibilityRole="button" accessibilityLabel={`Delete ${item.title || 'chat'}`}><Ionicons name="trash-outline" size={19} color={COLORS.danger}/></TouchableOpacity>
+          </View>}
         />
       )}
       <Modal visible={newChatModal} transparent animationType="fade" onRequestClose={() => setNewChatModal(false)}>
@@ -475,6 +557,25 @@ function StatusScreen() {
     const q = query(collection(db, 'statuses'), orderBy('createdAt', 'desc'));
     return onSnapshot(q, (snapshot) => { setStatuses(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))); setLoading(false); }, (error) => { console.warn('Status listener failed:', error); setLoading(false); });
   }, []);
+  async function deleteStatus(status) {
+    if (!auth.currentUser?.uid || status.uid !== auth.currentUser.uid) return;
+    Alert.alert('Delete status?', 'This removes your status update for everyone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => {
+        try {
+          if (status.mediaUrl) {
+            try { await deleteObject(storageRef(storage, status.mediaUrl)); }
+            catch (storageError) { console.warn('Could not remove status media file:', storageError); }
+          }
+          await deleteDoc(doc(db, 'statuses', status.id));
+        } catch (error) {
+          console.warn('Status delete failed:', error);
+          Alert.alert('Could not delete status', error?.message || 'Check Firestore rules and connection.');
+        }
+      } },
+    ]);
+  }
+
   async function postStatus(mediaOnly = false) {
     const text = statusText.trim();
     if (!text && !mediaOnly) return;
@@ -509,7 +610,7 @@ function StatusScreen() {
       Alert.alert('Could not post media status', error?.message || 'Check Firebase Storage setup and rules.');
     } finally { setPosting(false); }
   }
-  return <View style={styles.screen}><Header title="Status" subtitle="Updates from your friends"/><View style={styles.statusComposer}><TextInput style={styles.statusInput} value={statusText} onChangeText={setStatusText} placeholder="What's on your mind?" placeholderTextColor={COLORS.secondary} maxLength={500}/><TouchableOpacity style={styles.mediaButton} accessibilityLabel="Add photo or video status" onPress={chooseMedia}><Ionicons name="image-outline" size={21} color={COLORS.primary}/></TouchableOpacity><TouchableOpacity style={[styles.sendButton, !statusText.trim() && styles.sendButtonDisabled]} disabled={!statusText.trim() || posting} onPress={() => postStatus(false)}>{posting ? <ActivityIndicator color="#fff"/> : <Ionicons name="send" size={18} color="#fff"/>}</TouchableOpacity></View><Text style={styles.sectionLabel}>Recent updates</Text>{loading ? <View style={styles.centered}><ActivityIndicator color={COLORS.primary}/></View> : <FlatList data={statuses} keyExtractor={(item) => item.id} contentContainerStyle={styles.contactList} ListEmptyComponent={<View style={styles.emptyState}><Ionicons name="radio-button-on-outline" size={44} color={COLORS.primary}/><Text style={styles.emptyTitle}>No status updates yet</Text><Text style={styles.helperText}>Post text, a photo, or a short video. Firebase Storage must be enabled for media status.</Text></View>} renderItem={({ item }) => <View style={styles.statusCard}><View style={styles.avatar}><Ionicons name="person" size={20} color={COLORS.primary}/></View><View style={styles.contactDetails}><Text style={styles.contactName}>{item.author || 'Chit Chat user'}</Text>{item.text ? <Text style={styles.statusBody}>{item.text}</Text> : null}{item.mediaUrl && item.mediaType !== 'video' ? <Image source={{ uri: item.mediaUrl }} style={styles.statusMedia} resizeMode="cover" /> : null}{item.mediaUrl && item.mediaType === 'video' ? <Text style={styles.mediaLink} onPress={() => Linking.openURL(item.mediaUrl).catch(() => Alert.alert('Cannot open video', 'This video URL could not be opened on this device.'))}>▶ Open video status</Text> : null}</View></View>}/>}</View>;
+  return <View style={styles.screen}><Header title="Status" subtitle="Updates from your friends"/><View style={styles.statusComposer}><TextInput style={styles.statusInput} value={statusText} onChangeText={setStatusText} placeholder="What's on your mind?" placeholderTextColor={COLORS.secondary} maxLength={500}/><TouchableOpacity style={styles.mediaButton} accessibilityLabel="Add photo or video status" onPress={chooseMedia}><Ionicons name="image-outline" size={21} color={COLORS.primary}/></TouchableOpacity><TouchableOpacity style={[styles.sendButton, !statusText.trim() && styles.sendButtonDisabled]} disabled={!statusText.trim() || posting} onPress={() => postStatus(false)}>{posting ? <ActivityIndicator color="#fff"/> : <Ionicons name="send" size={18} color="#fff"/>}</TouchableOpacity></View><Text style={styles.sectionLabel}>Recent updates</Text>{loading ? <View style={styles.centered}><ActivityIndicator color={COLORS.primary}/></View> : <FlatList data={statuses} keyExtractor={(item) => item.id} contentContainerStyle={styles.contactList} ListEmptyComponent={<View style={styles.emptyState}><Ionicons name="radio-button-on-outline" size={44} color={COLORS.primary}/><Text style={styles.emptyTitle}>No status updates yet</Text><Text style={styles.helperText}>Post text, a photo, or a short video. Firebase Storage must be enabled for media status.</Text></View>} renderItem={({ item }) => <View style={styles.statusCard}><View style={styles.avatar}><Ionicons name="person" size={20} color={COLORS.primary}/></View><View style={styles.contactDetails}><Text style={styles.contactName}>{item.author || 'Chit Chat user'}</Text>{item.text ? <Text style={styles.statusBody}>{item.text}</Text> : null}{item.mediaUrl && item.mediaType !== 'video' ? <Image source={{ uri: item.mediaUrl }} style={styles.statusMedia} resizeMode="cover" /> : null}{item.mediaUrl && item.mediaType === 'video' ? <Text style={styles.mediaLink} onPress={() => Linking.openURL(item.mediaUrl).catch(() => Alert.alert('Cannot open video', 'This video URL could not be opened on this device.'))}>▶ Open video status</Text> : null}</View>{item.uid === auth.currentUser?.uid ? <TouchableOpacity onPress={() => deleteStatus(item)} accessibilityRole="button" accessibilityLabel="Delete your status" style={styles.statusDeleteButton}><Ionicons name="trash-outline" size={19} color={COLORS.danger}/></TouchableOpacity> : null}</View>}/>}</View>;
 }
 
 function CallsScreen() {
@@ -708,6 +809,9 @@ const styles = StyleSheet.create({
   },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#DDF1E6', alignItems: 'center', justifyContent: 'center' },
   contactDetails: { flex: 1, marginLeft: 12 },
+  chatRowMain: { flex: 1, flexDirection: 'row', alignItems: 'center', minWidth: 0 },
+  deleteChatButton: { padding: 8, marginLeft: 6 },
+  statusDeleteButton: { padding: 7, marginLeft: 4 },
   contactName: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   contactNumber: { fontSize: 13, color: COLORS.secondary, marginTop: 3 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
@@ -726,6 +830,7 @@ const styles = StyleSheet.create({
   theirMessage: { alignSelf: 'flex-start', backgroundColor: COLORS.card },
   messageSender: { fontSize: 11, color: COLORS.secondary, fontWeight: '700', marginBottom: 4 },
   messageText: { fontSize: 15, color: COLORS.text, lineHeight: 21 },
+  messageActionHint: { fontSize: 10, color: COLORS.secondary, marginTop: 6, textAlign: 'right' },
   composer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingTop: 10, backgroundColor: COLORS.card, borderTopWidth: 1, borderTopColor: COLORS.border },
   messageInput: { flex: 1, maxHeight: 110, minHeight: 42, backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border, borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10, color: COLORS.text, fontSize: 15 },
   sendButton: { width: 42, height: 42, borderRadius: 21, marginLeft: 8, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
