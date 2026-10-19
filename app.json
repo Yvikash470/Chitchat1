@@ -16,7 +16,11 @@
       "package": "com.yvikash470.chitchat",
       "permissions": [
         "READ_CONTACTS"
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/chitchat-foreground.png",
+        "backgroundColor": "#071F37"
+      }
     },
     "extra": {
       "eas": {
@@ -30,6 +34,7 @@
           "contactsPermission": "Allow Chit Chat to access your contacts."
         }
       ]
-    ]
+    ],
+    "icon": "./assets/chitchat-icon.png"
   }
 }
