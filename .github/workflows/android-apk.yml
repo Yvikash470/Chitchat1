@@ -17,11 +17,35 @@ jobs:
         with:
           node-version: 22
 
+      - name: Verify required source and assets
+        shell: bash
+        run: |
+          test -f App.js
+          test -f package.json
+          test -f app.json
+          test -f eas.json
+          test -f assets/chitchat-icon.png
+          test -f assets/chitchat-foreground.png
+          echo "Required Chit Chat source files and app icons are present."
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Run source and configuration preflight
+        run: npm run check
+
       - name: Check Expo project
         run: npx expo-doctor
+
+      - name: Verify Expo authentication secret
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Missing GitHub Actions secret EXPO_TOKEN. Add an Expo access token under Repository Settings > Secrets and variables > Actions."
+            exit 1
+          fi
 
       - name: Install EAS CLI
         run: npm install --global eas-cli
