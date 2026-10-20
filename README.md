@@ -2,6 +2,33 @@
 
 This project retains the welcome/authentication UI and the Chats, Status, Calls, and Contacts tabs. It includes Firebase-backed one-to-one and group conversations, real-time message listeners, chat photo/video attachments, a custom Chit Chat app icon, message deletion, status deletion, per-user chat hiding, and foreground incoming-message pop-ups.
 
+## Added features in this revision
+
+- Five selectable themes (WhatsApp Green, Mint Green, Ocean Blue, Violet, Sunset Coral) under the app menu → Theme. The choice is saved on the device.
+- Presence records `isOnline` and `lastSeen` as the app enters foreground/background. Presence is best-effort; abrupt process termination or loss of internet can leave a stale online value until the next app state update.
+- Registration has an optional phone-number field. Contacts can show whether a saved number matches a Chit Chat profile and can open the SMS app to invite unregistered contacts. Phone matching normalizes to the last 10 digits, so international number formats can still collide; production phone discovery should use verified E.164 numbers and a privacy-preserving backend.
+- The app registers an Expo push token when notification permission is granted. `functions/index.js` includes a Firebase Cloud Function to send push notifications for new messages.
+
+## Required setup / limitations for these features
+
+- **Phone-number OTP login is not implemented.** Authentication remains Firebase email/password (which stays signed in across app restarts on native). The optional phone number is for contact discovery, not a verified login identity. Phone OTP requires enabling Firebase Phone sign-in and implementing a native-compatible verification flow.
+- **Lock-screen push notifications need deployment:** run `cd functions && npm install`, deploy with `firebase deploy --only functions:notifyNewChatMessage`, and configure billing/permissions as required by Firebase. Test on a development/standalone Android build; Expo push tokens are not guaranteed in Expo Go. The client token registration and function are provided but have not been deployed or live-tested here.
+- Theme changes affect screens that re-render; restart the app if any already-open screen retains stale styling.
+
+## New options in this update
+
+- Five personal themes: WhatsApp Green, Mint Green, Ocean Blue, Violet, and Sunset Coral, saved on-device from the app menu → Theme.
+- Online/last-seen presence is written to the user profile when the app opens, backgrounds, and closes normally. Network loss or force-stop can delay/stale presence updates.
+- Registration accepts an optional phone number. Contacts checks saved numbers against registered profile numbers, shows online/last-seen when matched, opens a chat for matched users, and opens SMS to invite unmatched contacts.
+- Firebase Auth is initialized with AsyncStorage persistence so native email/password sessions remain signed in after app restarts until the user logs out.
+- Expo push tokens are registered and `functions/index.js` sends push notifications for new messages after deployment.
+
+## Important limitations and required setup
+
+- **Phone-number OTP login is not implemented.** The login flow remains email/password; phone number is a profile/contact-discovery field only. Real phone login needs Firebase Phone Authentication plus a native-compatible verification flow and SMS billing/region configuration.
+- **Lock-screen notifications require Cloud Functions deployment:** run `cd functions && npm install`, then deploy from the project root with `firebase deploy --only functions:notifyNewChatMessage`. Configure Firebase billing/permissions as required and test on a development/standalone Android build. This function has not been deployed or live-tested here.
+- Phone matching compares the last 10 digits for convenience. For production, use verified E.164 numbers and a privacy-preserving server-side contact matching approach.
+
 ## Important behavior
 
 - Email/password authentication uses Firebase Authentication.
@@ -56,3 +83,14 @@ The included `.github/workflows/android-apk.yml` uses Expo Application Services 
 - `eas.json` is configured for an APK using the `preview` profile.
 - The GitHub workflow builds on EAS cloud infrastructure; it requires a valid `EXPO_TOKEN` and an EAS project you can access.
 - The app has not been verified on a physical device in this environment. Expo SDK 51 is an older SDK; if Expo doctor reports compatibility issues, address those before distributing the app.
+
+
+## Message read receipts (single/double ticks)
+
+Outgoing messages show one grey tick after sending, two grey ticks after the recipient's app receives the message and writes a `deliveredBy` receipt, and green double ticks after the recipient opens the conversation and the app writes a `readBy` receipt. Delivery receipts depend on the recipient's app being connected and its Firestore listeners running; push-notification delivery alone is not treated as a message-delivered receipt. Deploy the updated `firestore.rules` in Firebase Console for receipts to work. These changes have been checked statically but have not been tested on two live devices.
+
+## Delivery/read receipt and APK workflow notes
+
+Outgoing messages show one grey tick after the sender writes the message. A grey double tick appears when the recipient's signed-in app receives the message and successfully writes its UID into `deliveredBy`. The double tick becomes green when the recipient opens that conversation and their UID is added to `readBy`. This is an app-level delivery acknowledgement; it does not guarantee that an OS push notification was delivered. Deploy the updated `firestore.rules` before testing receipts.
+
+The GitHub Actions workflow downloads the build by its EAS build ID and uses the current `--output` argument rather than the unsupported `--latest` / `--path` flags. A successful workflow still depends on valid GitHub `EXPO_TOKEN`, Expo project access, dependency installation, and the EAS cloud build succeeding.
