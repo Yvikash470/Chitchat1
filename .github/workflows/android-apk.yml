@@ -1,68 +1,103 @@
 name: Build Chit Chat Android APK
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [ main, master ]
+workflow_dispatch:
+push:
+branches: [main, master]
 
 jobs:
-  build-android:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+build-android:
+runs-on: ubuntu-latest
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
+```
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - name: Verify required source and assets
-        shell: bash
-        run: |
-          test -f App.js
-          test -f package.json
-          test -f app.json
-          test -f eas.json
-          test -f assets/chitchat-icon.png
-          test -f assets/chitchat-foreground.png
-          echo "Required Chit Chat source files and app icons are present."
+  - name: Set up Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: 22
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+  - name: Verify required source and assets
+    shell: bash
+    run: |
+      set -e
+      test -f App.js
+      test -f package.json
+      test -f app.json
+      test -f eas.json
+      test -f assets/chitchat-icon.png
+      test -f assets/chitchat-foreground.png
+      test -f scripts/check-project.js
+      echo "Required ChitChat source files and assets are present."
 
-      - name: Run source and configuration preflight
-        run: npm run check
+  - name: Install dependencies
+    run: npm install --no-audit --no-fund
 
-      - name: Check Expo project
-        run: npx expo-doctor
+  - name: Run source and configuration preflight
+    run: npm run check
 
-      - name: Verify Expo authentication secret
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        shell: bash
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "Missing GitHub Actions secret EXPO_TOKEN. Add an Expo access token under Repository Settings > Secrets and variables > Actions."
-            exit 1
-          fi
+  - name: Check Expo project
+    run: npx expo-doctor
 
-      - name: Install EAS CLI
-        run: npm install --global eas-cli
+  - name: Verify Expo authentication secret
+    shell: bash
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    run: |
+      if [ -z "$EXPO_TOKEN" ]; then
+        echo "Missing EXPO_TOKEN GitHub Actions secret."
+        exit 1
+      fi
+      echo "Expo token is configured."
 
-      - name: Build APK on EAS
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform android --profile preview --non-interactive --wait
+  - name: Install EAS CLI
+    run: npm install --global eas-cli
 
-      - name: Download latest APK
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build:download --platform android --latest --path ./ChitChat.apk
+  - name: Build APK on EAS
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    run: eas build --platform android --profile preview --non-interactive --wait
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ChitChat-Android-APK
-          path: ./ChitChat.apk
-          if-no-files-found: error
+  - name: Download APK from completed EAS build
+    shell: bash
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    run: |
+      set -euo pipefail
+
+      echo "Finding the latest completed Android build..."
+      eas build:list --platform android --status finished --limit 1 --json > builds.json
+
+      BUILD_ID=$(node -e "const x=require('./builds.json'); const b=Array.isArray(x)?x[0]:x.builds?.[0]; if(b?.id) process.stdout.write(b.id)")
+
+      if [ -z "$BUILD_ID" ]; then
+        echo "No completed Android build was returned by EAS."
+        cat builds.json
+        exit 1
+      fi
+
+      echo "Reading build details..."
+      eas build:view "$BUILD_ID" --json > build.json
+
+      APK_URL=$(node -e "const x=require('./build.json'); const b=x.build || x; const u=b.artifacts?.buildUrl; if(u) process.stdout.write(u)")
+
+      if [ -z "$APK_URL" ]; then
+        echo "EAS did not return an APK download URL."
+        cat build.json
+        exit 1
+      fi
+
+      curl --fail --location --retry 3 "$APK_URL" --output ChitChat.apk
+      test -s ChitChat.apk
+      echo "APK downloaded successfully."
+
+  - name: Upload APK artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: ChitChat-Android-APK
+      path: ChitChat.apk
+      if-no-files-found: error
+      retention-days: 7
+```
