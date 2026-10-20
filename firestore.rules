@@ -18,6 +18,9 @@ service cloud.firestore {
         && request.resource.data.uid == userId
         && request.resource.data.email is string;
       allow delete: if false;
+      match /private/{privateDocId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
     }
 
     match /conversations/{conversationId} {
@@ -63,7 +66,17 @@ service cloud.firestore {
           && (request.resource.data.mediaUrl == null
             || (request.resource.data.mediaUrl is string
               && request.resource.data.mediaType in ['image', 'video']));
-        allow update: if false;
+        // Members may only add their own UID to delivery/read receipts; message content remains immutable.
+        allow update: if isConversationMember(conversationId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy', 'deliveredBy'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['readBy'])
+            || (request.resource.data.readBy is list
+              && request.resource.data.readBy.toSet().hasAll(resource.data.get('readBy', []).toSet())
+              && request.resource.data.readBy.toSet().difference(resource.data.get('readBy', []).toSet()).hasOnly([request.auth.uid])))
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['deliveredBy'])
+            || (request.resource.data.deliveredBy is list
+              && request.resource.data.deliveredBy.toSet().hasAll(resource.data.get('deliveredBy', []).toSet())
+              && request.resource.data.deliveredBy.toSet().difference(resource.data.get('deliveredBy', []).toSet()).hasOnly([request.auth.uid])));
         allow delete: if isConversationMember(conversationId)
           && resource.data.senderId == request.auth.uid;
       }
