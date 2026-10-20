@@ -26,7 +26,9 @@
     "expo-auth-session": "~5.5.2",
     "expo-web-browser": "~13.0.3",
     "expo-crypto": "~13.0.2",
-    "expo-image-picker": "~15.1.0"
+    "expo-image-picker": "~15.1.0",
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "expo-notifications": "~0.28.19"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
