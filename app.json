@@ -15,7 +15,8 @@
     "android": {
       "package": "com.yvikash470.chitchat",
       "permissions": [
-        "READ_CONTACTS"
+        "READ_CONTACTS",
+        "POST_NOTIFICATIONS"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/chitchat-foreground.png",
@@ -33,7 +34,8 @@
         {
           "contactsPermission": "Allow Chit Chat to access your contacts."
         }
-      ]
+      ],
+      "expo-notifications"
     ],
     "icon": "./assets/chitchat-icon.png"
   }
