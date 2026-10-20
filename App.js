@@ -1,5 +1,8 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import {
   ActivityIndicator,
   Alert,
@@ -25,7 +28,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
-  createUserWithEmailAndPassword, getAuth, GoogleAuthProvider, onAuthStateChanged,
+  createUserWithEmailAndPassword, getAuth, initializeAuth, getReactNativePersistence, GoogleAuthProvider, onAuthStateChanged,
   signInWithCredential, signInWithEmailAndPassword, signOut, updateProfile,
 } from 'firebase/auth';
 import * as Google from 'expo-auth-session/providers/google';
@@ -70,18 +73,20 @@ const firebaseConfig = {
 const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const storage = getStorage(firebaseApp);
-const auth = getAuth(firebaseApp);
+const auth = (() => { try { return initializeAuth(firebaseApp, { persistence: getReactNativePersistence(AsyncStorage) }); } catch (_) { return getAuth(firebaseApp); } })();
 WebBrowser.maybeCompleteAuthSession();
+Notifications.setNotificationHandler({ handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: false }) });
 
-const COLORS = {
-  primary: '#168A58',
-  background: '#F1F8F4',
-  card: '#FFFFFF',
-  text: '#16352A',
-  secondary: '#526B60',
-  border: '#BED8C9',
-  danger: '#B42318',
+const THEMES = {
+  whatsapp: { label: 'WhatsApp Green', primary: '#075E54', background: '#EAF2EF', card: '#FFFFFF', text: '#102C24', secondary: '#667A73', border: '#D5E2DC', danger: '#B42318', outgoing: '#D9FDD3' },
+  mint: { label: 'Mint Green', primary: '#168A58', background: '#F1F8F4', card: '#FFFFFF', text: '#16352A', secondary: '#526B60', border: '#BED8C9', danger: '#B42318', outgoing: '#DDF1E6' },
+  ocean: { label: 'Ocean Blue', primary: '#1769AA', background: '#EEF5FC', card: '#FFFFFF', text: '#142B42', secondary: '#5E7488', border: '#C9DDED', danger: '#B42318', outgoing: '#D8EBFF' },
+  violet: { label: 'Violet', primary: '#7046A8', background: '#F5F0FA', card: '#FFFFFF', text: '#30213E', secondary: '#776982', border: '#DED1EB', danger: '#B42318', outgoing: '#EDE0FA' },
+  sunset: { label: 'Sunset Coral', primary: '#C65342', background: '#FFF3EF', card: '#FFFFFF', text: '#3D2521', secondary: '#86645E', border: '#F0D4CC', danger: '#B42318', outgoing: '#FFE0D6' },
 };
+let COLORS = THEMES.whatsapp;
+let setThemeHandler = () => {};
+let styles;
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
@@ -90,6 +95,7 @@ function ContactsScreen({ navigation }) {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const [registeredPhones, setRegisteredPhones] = useState({});
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -116,6 +122,13 @@ function ContactsScreen({ navigation }) {
             (contact) => contact.name || contact.phoneNumbers?.length
           );
           setContacts(validContacts);
+          const directory = await getDocs(collection(db, 'users'));
+          const normalize = (v) => String(v || '').replace(/[^0-9]/g, '').slice(-10);
+          const byPhone = {};
+          directory.docs.forEach((d) => { const n = normalize(d.data().phoneNumber); if (n) byPhone[n] = { uid: d.id, ...d.data() }; });
+          const matches = {};
+          validContacts.forEach((c) => { const n = normalize(c.phoneNumbers?.[0]?.number); if (n && byPhone[n] && byPhone[n].uid !== auth.currentUser?.uid) matches[c.id || c.name || n] = byPhone[n]; });
+          setRegisteredPhones(matches);
           setLoading(false);
         }
       } catch (error) {
@@ -133,24 +146,33 @@ function ContactsScreen({ navigation }) {
     };
   }, []);
 
-  const renderContact = ({ item }) => (
-    <TouchableOpacity
-      accessibilityRole="button"
-      style={styles.contactRow}
-      onPress={() => Alert.alert('Start a Chit Chat conversation', 'Phone contacts are not automatically Chit Chat accounts. Open the Chats tab, tap New chat, and enter the email address they used to register.')}
-    >
-      <View style={styles.avatar}>
-        <Ionicons name="person" size={22} color={COLORS.primary} />
-      </View>
+  async function startContactChat(matched) {
+    const current = auth.currentUser;
+    if (!current?.uid || !matched?.uid) return;
+    try {
+      const members = [current.uid, matched.uid].sort();
+      const conversationId = `dm_${members[0]}_${members[1]}`;
+      const conversationRef = doc(db, 'conversations', conversationId);
+      const existing = await getDoc(conversationRef);
+      if (!existing.exists()) await setDoc(conversationRef, { type: 'private', title: matched.displayName || matched.email || 'Chit Chat user', members, createdBy: current.uid, updatedAt: serverTimestamp() });
+      else if ((existing.data().hiddenFor || []).includes(current.uid)) await updateDoc(conversationRef, { hiddenFor: arrayRemove(current.uid), updatedAt: serverTimestamp() });
+      navigation.navigate('Conversation', { conversationId, title: matched.displayName || matched.email || 'Chit Chat user', kind: 'private' });
+    } catch (error) { Alert.alert('Could not open chat', error?.message || 'Check your connection and Firestore rules.'); }
+  }
+
+  const renderContact = ({ item }) => {
+    const phone = item.phoneNumbers?.[0]?.number || '';
+    const matched = registeredPhones[item.id || item.name || phone];
+    return <View style={styles.contactRow}>
+      <View style={styles.avatar}><Ionicons name="person" size={22} color={COLORS.primary} /></View>
       <View style={styles.contactDetails}>
         <Text style={styles.contactName}>{item.name || 'Unknown contact'}</Text>
-        <Text style={styles.contactNumber}>
-          {item.phoneNumbers?.[0]?.number || 'No phone number'}
-        </Text>
+        <Text style={styles.contactNumber}>{phone || 'No phone number'}</Text>
+        <Text style={[styles.contactNumber, { color: matched?.isOnline ? '#16A34A' : COLORS.secondary }]}>{matched ? (matched.isOnline ? '● Online on Chit Chat' : `Last seen ${matched.lastSeen?.toDate ? matched.lastSeen.toDate().toLocaleString() : 'recently'}`) : 'Not on Chit Chat'}</Text>
       </View>
-      <Ionicons name="chatbubble-ellipses-outline" size={21} color={COLORS.primary} />
-    </TouchableOpacity>
-  );
+      {matched ? <TouchableOpacity onPress={() => startContactChat(matched)} style={styles.callAction}><Ionicons name="chatbubble-ellipses-outline" size={21} color={COLORS.primary}/></TouchableOpacity> : <TouchableOpacity onPress={() => { if (!phone) { Alert.alert('No phone number', 'This contact does not have a phone number saved.'); return; } const body = encodeURIComponent('Join me on Chit Chat and let’s chat!'); Linking.openURL(`sms:${phone}?body=${body}`).catch(() => Alert.alert('Cannot open SMS', 'Please send an invitation text from your messaging app.')); }} style={styles.callAction}><Ionicons name="paper-plane-outline" size={21} color={COLORS.primary}/></TouchableOpacity>}
+    </View>;
+  };
 
   return (
     <View style={[styles.screen, { paddingTop: Math.max(insets.top, 12) + 12 }]}>
@@ -209,8 +231,19 @@ function ConversationScreen({ route, navigation }) {
     }
     const messagesQuery = query(collection(db, 'conversations', conversationId, 'messages'), orderBy('createdAt', 'asc'));
     const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
-      setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+      const liveMessages = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      setMessages(liveMessages);
       setLoading(false);
+      // Opening this conversation marks incoming messages as read. The sender's
+      // live listener then displays the green double tick.
+      snapshot.docs.forEach((item) => {
+        const data = item.data();
+        if (data.senderId !== currentUser.uid && !(Array.isArray(data.readBy) && data.readBy.includes(currentUser.uid))) {
+          updateDoc(item.ref, { readBy: arrayUnion(currentUser.uid) }).catch((receiptError) => {
+            console.warn('Could not update read receipt:', receiptError);
+          });
+        }
+      });
     }, (error) => {
       console.warn('Conversation listener failed:', error);
       setLoading(false);
@@ -231,6 +264,8 @@ function ConversationScreen({ route, navigation }) {
         mediaUrl: media?.url || null,
         mediaType: media?.type || null,
         createdAt: serverTimestamp(),
+        deliveredBy: [],
+        readBy: [],
       });
       await setDoc(doc(db, 'conversations', conversationId), {
         lastMessage: cleanText || (media?.type === 'video' ? 'Video' : 'Photo'),
@@ -340,7 +375,7 @@ function ConversationScreen({ route, navigation }) {
               {!!item.text && <Text style={styles.messageText}>{item.text}</Text>}
               {item.mediaUrl && item.mediaType === 'image' ? <Image source={{ uri: item.mediaUrl }} style={styles.statusMedia} resizeMode="cover" /> : null}
               {item.mediaUrl && item.mediaType === 'video' ? <Text style={styles.mediaLink} onPress={() => Linking.openURL(item.mediaUrl).catch(() => Alert.alert('Cannot open video', 'This video URL could not be opened on this device.'))}>▶ Open video</Text> : null}
-              {mine ? <Text style={styles.messageActionHint}>Long press to delete</Text> : null}
+              {mine ? (() => { const seen = Array.isArray(item.readBy) && item.readBy.some((uid) => uid !== currentUser?.uid); const delivered = Array.isArray(item.deliveredBy) && item.deliveredBy.some((uid) => uid !== currentUser?.uid); const receipt = seen ? '✓✓' : delivered ? '✓✓' : '✓'; return <View style={styles.messageMetaRow}><Text style={styles.messageActionHint}>Long press to delete</Text><Text accessibilityLabel={seen ? 'Seen' : delivered ? 'Delivered' : 'Sent'} style={[styles.readReceipt, delivered ? styles.readReceiptDelivered : null, seen ? styles.readReceiptSeen : null]}>{receipt}</Text></View>; })() : null}
             </TouchableOpacity>;
           }}
         />
@@ -354,12 +389,29 @@ function ConversationScreen({ route, navigation }) {
   );
 }
 
+function openThemeMenu() {
+  Alert.alert('Choose a theme', 'WhatsApp Green is the default. Choose your preferred colours.', [
+    { text: 'WhatsApp Green', onPress: () => setThemeHandler('whatsapp') },
+    { text: 'More themes', onPress: () => Alert.alert('More themes', 'Choose a colour palette.', [
+      { text: 'Mint Green', onPress: () => setThemeHandler('mint') },
+      { text: 'More', onPress: () => Alert.alert('More themes', 'Choose a colour palette.', [
+        { text: 'Ocean Blue', onPress: () => setThemeHandler('ocean') },
+        { text: 'Violet', onPress: () => setThemeHandler('violet') },
+        { text: 'Sunset Coral', onPress: () => setThemeHandler('sunset') },
+      ]) },
+      { text: 'Cancel', style: 'cancel' },
+    ]) },
+    { text: 'Cancel', style: 'cancel' },
+  ]);
+}
+
 function openAppMenu() {
   Alert.alert('Chit Chat', 'Choose an option', [
     { text: 'New group', onPress: () => Alert.alert('Create group', 'Open the Chats tab and choose Create group. Add the email addresses of registered members.') },
+    { text: 'Theme', onPress: openThemeMenu },
     { text: 'Starred messages', onPress: () => Alert.alert('Starred messages', 'Message starring is not enabled in this build yet.') },
     { text: 'Link device', onPress: () => Alert.alert('Link another device', 'Install Chit Chat on your other phone and sign in with this same account. Your chats sync through Firebase. QR-based companion-device pairing and a device-management list are not implemented in this version.') },
-    { text: 'Message pop-ups', onPress: () => Alert.alert('Message pop-ups', 'Chit Chat shows an in-app pop-up when a new message arrives while the app is open. Lock-screen/background push notifications require additional Expo push notification setup and a trusted server trigger.') },
+    { text: 'Message notifications', onPress: () => Alert.alert('Message notifications', 'The app registers your Expo push token. Background/lock-screen delivery requires deploying the Firebase Cloud Function described in README.md and granting notification permission.') },
     { text: 'Settings / Profile', onPress: () => Alert.alert('Account', `Signed in as ${auth.currentUser?.displayName || auth.currentUser?.email || 'Chit Chat user'}\n\nUse Firebase Authentication to manage your account.`, [{ text: 'OK' }, { text: 'Log out', style: 'destructive', onPress: () => signOut(auth).catch((error) => Alert.alert('Could not log out', authErrorMessage(error))) }]) },
     { text: 'Log out', style: 'destructive', onPress: () => signOut(auth).catch((error) => Alert.alert('Could not log out', authErrorMessage(error))) },
     { text: 'Cancel', style: 'cancel' },
@@ -421,24 +473,33 @@ function ChatsScreen({ navigation }) {
   }, [currentUser?.uid]);
 
   async function startPrivateChat() {
-    const email = newChatEmail.trim().toLowerCase();
-    if (!email || !currentUser?.uid || saving) return;
+    const lookup = newChatEmail.trim();
+    const email = lookup.toLowerCase();
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const phone = lookup.replace(/[^+0-9]/g, '');
+    if (!lookup || !currentUser?.uid || saving) return;
     setSaving(true);
     try {
-      const userQuery = query(collection(db, 'users'), where('email', '==', email), limit(1));
-      const usersSnapshot = await getDocs(userQuery);
-      if (usersSnapshot.empty) {
-        Alert.alert('User not found', 'Ask the person to create a Chit Chat account with this email first.');
+      let target;
+      if (isEmail) {
+        const usersSnapshot = await getDocs(query(collection(db, 'users'), where('email', '==', email), limit(1)));
+        target = usersSnapshot.docs[0];
+      } else {
+        const usersSnapshot = await getDocs(collection(db, 'users'));
+        const normalize = (v) => String(v || '').replace(/[^0-9]/g, '').slice(-10);
+        target = usersSnapshot.docs.find((d) => normalize(d.data().phoneNumber) && normalize(d.data().phoneNumber) === normalize(phone));
+      }
+      if (!target) {
+        Alert.alert('User not found', 'Ask the person to register with this email or add their phone number to their Chit Chat profile first.');
         return;
       }
-      const target = usersSnapshot.docs[0];
       if (target.id === currentUser.uid) {
         Alert.alert('Choose another user', 'You cannot start a private chat with your own account.');
         return;
       }
       const members = [currentUser.uid, target.id].sort();
       const conversationId = `dm_${members[0]}_${members[1]}`;
-      const targetName = target.data().displayName || target.data().email || email;
+      const targetName = target.data().displayName || target.data().email || target.data().phoneNumber || lookup;
       const conversationRef = doc(db, 'conversations', conversationId);
       const existingConversation = await getDoc(conversationRef);
       if (!existingConversation.exists()) {
@@ -664,6 +725,7 @@ function AuthScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [busy, setBusy] = useState(false);
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
     webClientId: 'YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com',
@@ -703,7 +765,8 @@ function AuthScreen() {
       if (mode === 'register') {
         const result = await createUserWithEmailAndPassword(auth, cleanEmail, password);
         await updateProfile(result.user, { displayName: name.trim() });
-        await setDoc(doc(db, 'users', result.user.uid), { uid: result.user.uid, email: cleanEmail, displayName: name.trim(), createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+        const normalizedPhone = phoneNumber.replace(/[^+0-9]/g, '');
+        await setDoc(doc(db, 'users', result.user.uid), { uid: result.user.uid, email: cleanEmail, phoneNumber: normalizedPhone || null, displayName: name.trim(), isOnline: true, lastSeen: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
       } else {
         await signInWithEmailAndPassword(auth, cleanEmail, password);
       }
@@ -734,6 +797,7 @@ function AuthScreen() {
       <Text style={styles.authHeading}>{mode === 'register' ? 'Create your account' : 'Welcome back'}</Text>
       <Text style={[styles.authSubtitle, {textAlign:'left'}]}>{mode === 'register' ? 'Join Chit Chat and stay connected.' : 'Log in to continue chatting.'}</Text>
       {mode === 'register' && <TextInput style={styles.authInput} placeholder="Your name" placeholderTextColor={COLORS.secondary} value={name} onChangeText={setName} autoCapitalize="words" returnKeyType="next" />}
+      {mode === 'register' && <TextInput style={styles.authInput} placeholder="Phone number with country code (optional)" placeholderTextColor={COLORS.secondary} value={phoneNumber} onChangeText={setPhoneNumber} keyboardType="phone-pad" autoCapitalize="none" returnKeyType="next" />}
       <TextInput style={styles.authInput} placeholder="Email address" placeholderTextColor={COLORS.secondary} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} textContentType="emailAddress" returnKeyType="next" />
       <TextInput style={styles.authInput} placeholder="Password (6+ characters)" placeholderTextColor={COLORS.secondary} value={password} onChangeText={setPassword} secureTextEntry textContentType={mode === 'register' ? 'newPassword' : 'password'} onSubmitEditing={submitEmailAuth} />
       <TouchableOpacity style={[styles.primaryAuthButton, busy && styles.authDisabled]} onPress={submitEmailAuth} disabled={busy} accessibilityRole="button">{busy ? <ActivityIndicator color="#FFFFFF"/> : <Text style={styles.primaryAuthText}>{mode === 'register' ? 'Create account' : 'Log in'}</Text>}</TouchableOpacity>
@@ -762,6 +826,9 @@ function AuthScreen() {
 
 function AppNavigator() {
   const [user, setUser] = useState(undefined);
+  const [themeKey, setThemeKey] = useState('whatsapp');
+  useEffect(() => { let alive = true; AsyncStorage.getItem('chitchat-theme').then((saved) => { if (alive && saved && THEMES[saved]) { COLORS = THEMES[saved]; styles = createStyles(); setThemeKey(saved); } }).catch(() => {}); return () => { alive = false; }; }, []);
+  useEffect(() => { setThemeHandler = async (key) => { if (!THEMES[key]) return; COLORS = THEMES[key]; styles = createStyles(); setThemeKey(key); try { await AsyncStorage.setItem('chitchat-theme', key); } catch (error) { console.warn('Could not save theme:', error); } }; return () => { setThemeHandler = () => {}; }; }, []);
   useEffect(() => onAuthStateChanged(auth, (currentUser) => {
     setUser(currentUser);
     if (currentUser) {
@@ -769,14 +836,45 @@ function AppNavigator() {
         uid: currentUser.uid,
         email: (currentUser.email || '').toLowerCase(),
         displayName: currentUser.displayName || currentUser.email || 'Chit Chat user',
-        updatedAt: serverTimestamp(),
+        isOnline: true, lastSeen: serverTimestamp(), updatedAt: serverTimestamp(),
       }, { merge: true }).catch((error) => console.warn('Could not sync user profile:', error));
     }
   }), []);
+  useEffect(() => { if (!user?.uid) return undefined; const updatePresence = (isOnline) => setDoc(doc(db, 'users', user.uid), { isOnline, lastSeen: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true }).catch((e) => console.warn('Presence update failed:', e)); updatePresence(true); const sub = AppState.addEventListener('change', (state) => updatePresence(state === 'active')); return () => { sub.remove(); updatePresence(false); }; }, [user?.uid]);
+  // While the recipient's app is connected, acknowledge incoming messages as delivered
+  // across all their conversations. Opening a conversation separately marks them read.
+  useEffect(() => {
+    if (!user?.uid) return undefined;
+    const messageUnsubs = new Map();
+    const conversationsQuery = query(collection(db, 'conversations'), where('members', 'array-contains', user.uid));
+    const unsubscribeConversations = onSnapshot(conversationsQuery, (conversationSnapshot) => {
+      const activeIds = new Set(conversationSnapshot.docs.map((item) => item.id));
+      for (const [conversationId, unsubscribe] of messageUnsubs.entries()) {
+        if (!activeIds.has(conversationId)) { unsubscribe(); messageUnsubs.delete(conversationId); }
+      }
+      conversationSnapshot.docs.forEach((conversationDoc) => {
+        if (messageUnsubs.has(conversationDoc.id)) return;
+        const messagesRef = collection(db, 'conversations', conversationDoc.id, 'messages');
+        const unsubscribeMessages = onSnapshot(messagesRef, (messageSnapshot) => {
+          messageSnapshot.docs.forEach((messageDoc) => {
+            const message = messageDoc.data();
+            if (message.senderId !== user.uid && !(Array.isArray(message.deliveredBy) && message.deliveredBy.includes(user.uid))) {
+              updateDoc(messageDoc.ref, { deliveredBy: arrayUnion(user.uid) }).catch((receiptError) => {
+                console.warn('Could not update delivery receipt:', receiptError);
+              });
+            }
+          });
+        }, (error) => console.warn('Delivery receipt listener failed:', error));
+        messageUnsubs.set(conversationDoc.id, unsubscribeMessages);
+      });
+    }, (error) => console.warn('Conversation delivery listener failed:', error));
+    return () => { unsubscribeConversations(); messageUnsubs.forEach((unsubscribe) => unsubscribe()); messageUnsubs.clear(); };
+  }, [user?.uid]);
+  useEffect(() => { if (!user?.uid) return undefined; let cancelled = false; (async () => { try { if (Platform.OS === 'android') await Notifications.setNotificationChannelAsync('messages', { name: 'Messages', importance: Notifications.AndroidImportance.MAX, vibrationPattern: [0,250,250,250], lightColor: COLORS.primary }); let p = await Notifications.getPermissionsAsync(); if (!p.granted) p = await Notifications.requestPermissionsAsync(); if (!p.granted || cancelled) return; const token = (await Notifications.getExpoPushTokenAsync({ projectId: 'c31dc2e1-baf7-4473-b0f0-c993cdc475c1' })).data; if (!cancelled && token) await setDoc(doc(db, 'users', user.uid, 'private', 'push'), { expoPushToken: token, updatedAt: serverTimestamp() }, { merge: true }); } catch (e) { console.warn('Push setup not available:', e); } })(); return () => { cancelled = true; }; }, [user?.uid]);
   if (user === undefined) return <View style={styles.authLoading}><ActivityIndicator size="large" color={COLORS.primary}/><Text style={styles.helperText}>Preparing Chit Chat…</Text></View>;
   if (!user) return <AuthScreen />;
   return (
-    <NavigationContainer>
+    <NavigationContainer key={themeKey}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Main" component={MainTabs} />
         <Stack.Screen name="Conversation" component={ConversationScreen} />
@@ -789,7 +887,7 @@ export default function App() {
   return <SafeAreaProvider><StatusBar barStyle="dark-content" backgroundColor={COLORS.background} /><AppNavigator /></SafeAreaProvider>;
 }
 
-const styles = StyleSheet.create({
+function createStyles() { return StyleSheet.create({
   screen: { flex: 1, backgroundColor: COLORS.background },
   mainHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 16, paddingRight: 16 },
   menuButton: { padding: 8 },
@@ -826,11 +924,15 @@ const styles = StyleSheet.create({
   messageList: { flex: 1 },
   messageContent: { padding: 16, flexGrow: 1 },
   messageBubble: { maxWidth: '85%', borderRadius: 14, padding: 11, marginBottom: 10, borderWidth: 1, borderColor: COLORS.border },
-  myMessage: { alignSelf: 'flex-end', backgroundColor: '#DDF1E6' },
+  myMessage: { alignSelf: 'flex-end', backgroundColor: COLORS.outgoing },
   theirMessage: { alignSelf: 'flex-start', backgroundColor: COLORS.card },
   messageSender: { fontSize: 11, color: COLORS.secondary, fontWeight: '700', marginBottom: 4 },
   messageText: { fontSize: 15, color: COLORS.text, lineHeight: 21 },
   messageActionHint: { fontSize: 10, color: COLORS.secondary, marginTop: 6, textAlign: 'right' },
+  messageMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginTop: 4 },
+  readReceipt: { fontSize: 14, color: COLORS.secondary, fontWeight: '700' },
+  readReceiptDelivered: { color: '#8A8A8A' },
+  readReceiptSeen: { color: '#20C763' },
   composer: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 12, paddingTop: 10, backgroundColor: COLORS.card, borderTopWidth: 1, borderTopColor: COLORS.border },
   messageInput: { flex: 1, maxHeight: 110, minHeight: 42, backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border, borderRadius: 22, paddingHorizontal: 16, paddingVertical: 10, color: COLORS.text, fontSize: 15 },
   sendButton: { width: 42, height: 42, borderRadius: 21, marginLeft: 8, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
@@ -878,4 +980,5 @@ const styles = StyleSheet.create({
   sectionLabel: { color: COLORS.secondary, fontWeight: '700', paddingHorizontal: 20, marginBottom: 8 },
   statusCard: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: COLORS.card, borderColor: COLORS.border, borderWidth: 1, borderRadius: 14, padding: 13, marginBottom: 10 },
   statusBody: { color: COLORS.text, fontSize: 15, marginTop: 4, lineHeight: 21 },
-});
+}); }
+styles = createStyles();
