@@ -3,9 +3,7 @@ name: Build Chit Chat Android APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
 
 jobs:
   build-android:
@@ -17,20 +15,18 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Verify required source and assets
         shell: bash
         run: |
-          set -euo pipefail
           test -f App.js
           test -f package.json
           test -f app.json
           test -f eas.json
           test -f assets/chitchat-icon.png
           test -f assets/chitchat-foreground.png
-          test -f scripts/check-project.js
-          echo "Required ChitChat files are present."
+          echo "Required Chit Chat source files and app icons are present."
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -41,16 +37,15 @@ jobs:
       - name: Check Expo project
         run: npx expo-doctor
 
-      - name: Verify Expo authentication
-        shell: bash
+      - name: Verify Expo authentication secret
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
         run: |
           if [ -z "$EXPO_TOKEN" ]; then
-            echo "Missing EXPO_TOKEN GitHub Actions secret."
+            echo "Missing GitHub Actions secret EXPO_TOKEN. Add an Expo access token under Repository Settings > Secrets and variables > Actions."
             exit 1
           fi
-          echo "Expo token is configured."
 
       - name: Install EAS CLI
         run: npm install --global eas-cli
@@ -60,40 +55,24 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas build --platform android --profile preview --non-interactive --wait
 
-      - name: Download completed APK
-        shell: bash
+      - name: Find completed Android build
+        id: find-build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
         run: |
-          set -euo pipefail
-          eas build:list --platform android --status finished --limit 5 --json > builds.json
+          eas build:list --platform android --limit 1 --json > eas-builds.json
+          BUILD_ID="$(node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('eas-builds.json','utf8')); const builds=Array.isArray(data)?data:(data.builds||data.data||[]); const b=builds[0]; if(!b?.id) { console.error('Could not find an EAS Android build ID in build list output'); process.exit(1); } process.stdout.write(b.id);")"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
-          BUILD_ID=$(node -e "const x=require('./builds.json'); const list=Array.isArray(x)?x:(x.builds||[]); const b=list.find(v=>v.status==='FINISHED' || v.status==='finished') || list[0]; if(b?.id) process.stdout.write(b.id)")
-
-          if [ -z "$BUILD_ID" ]; then
-            echo "No completed Android build was returned by EAS."
-            cat builds.json
-            exit 1
-          fi
-
-          eas build:view "$BUILD_ID" --json > build.json
-
-          APK_URL=$(node -e "const x=require('./build.json'); const b=x.build || x; const u=b.artifacts?.buildUrl; if(u) process.stdout.write(u)")
-
-          if [ -z "$APK_URL" ]; then
-            echo "EAS did not return an APK download URL."
-            cat build.json
-            exit 1
-          fi
-
-          curl --fail --location --retry 3 "$APK_URL" --output ChitChat.apk
-          test -s ChitChat.apk
-          echo "APK downloaded successfully."
+      - name: Download APK artifact
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas build:download "${{ steps.find-build.outputs.build_id }}" --output ./ChitChat.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ChitChat-Android-APK
-          path: ChitChat.apk
+          path: ./ChitChat.apk
           if-no-files-found: error
-          retention-days: 7
